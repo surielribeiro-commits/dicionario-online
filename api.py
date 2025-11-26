@@ -7,42 +7,57 @@ import unicodedata
 
 app = FastAPI(title="Dicionário de Rimas API")
 
-# Configuração de CORS
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 ARQUIVO_BANCO = 'dicionario_mestre.db'
 
-# Lista Negra Manual (Atualizada com Anglicismos e Erros)
 BLACKLIST = {
-    # Lixo anterior
     "calais", "hollywood", "mcdonalds", "facebook", "youtube", 
-    "google", "twitter", "instagram", "kaiser", "design", "muié",
-    
-    # Anglicismos terminados em ER
-    "after", "boxer", "camper", "cheater", "chester", "cluster", 
-    "cover", "driver", "folder", "führer", "mister", "pointer", 
-    "primer", "router", "server", "teaser", "timer", "voucher", 
-    "vtuber", "designer", "hamster", "hipster", "partner", 
-    "sniper", "spoiler", "outlier", "best-seller", "bestseller",
-    "blazer", "broder", "brother", "container", "laser", "poker",
-    "poster", "pier", "scanner", "trailer", "uber", "webdesigner",
-    
-    # Erros ou formas arcaicas estranhas
-    "fisser", "desder", "reder", "choveser", "apascentaser", 
-    "desnazificacer", "arquichanceler", "aluguer", "clister",
-    "bebericará", "reouver", "fizer", "disser", "trouxer", "puder" # Verbos conjugados soltos que às vezes poluem
+    "google", "twitter", "instagram", "kaiser", "design", "muié"
 }
 
 # --- FUNÇÕES AUXILIARES ---
 
 def remover_acentos(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+
+def identificar_tonicidade(palavra):
+    """
+    Classifica em OXITONA, PAROXITONA ou PROPAROXITONA.
+    Corrige o erro de rimar 'Rima' com 'Décima'.
+    """
+    p = palavra.lower().strip()
+    
+    # 1. Verifica acentos gráficos
+    # Se encontrar acento, conta quantas vogais existem DEPOIS dele.
+    # Ex: 'Décima' -> acento no 'é'. Depois tem 'i', 'a' (2 vogais). -> PROPAROXITONA.
+    # Ex: 'Café' -> acento no 'é'. Depois tem 0 vogais. -> OXITONA.
+    
+    vogais_geral = "aeiouáéíóúâêôãõ"
+    acento_encontrado = -1
+    
+    for i, char in enumerate(p):
+        if char in "áéíóúâêô": # Acentos tônicos fortes
+            acento_encontrado = i
+            break
+            
+    if acento_encontrado != -1:
+        resto = p[acento_encontrado+1:]
+        # Conta vogais no resto
+        num_vogais_pos = len(re.findall(r'[aeiouãõ]', resto))
+        
+        if num_vogais_pos == 0: return "OXITONA"
+        if num_vogais_pos == 1: return "PAROXITONA"
+        if num_vogais_pos >= 2: return "PROPAROXITONA" # Aqui cai a Décima, Lágrima, Máxima
+
+    # 2. Sem acento gráfico (Regras Padrão)
+    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un')):
+        return "OXITONA"
+    
+    return "PAROXITONA"
 
 def calcular_pontuacao(palavra_alvo, palavra_candidata, classe_candidata, origem_candidata):
     score = 0
@@ -67,29 +82,6 @@ def buscar_definicao_online(palavra):
     except: pass
     return None
 
-def identificar_tonicidade(palavra, ipa=None):
-    """
-    Descobre se a palavra é OXITONA ou PAROXITONA.
-    """
-    p = palavra.lower().strip()
-    
-    # Se tem acento gráfico final -> OXÍTONA
-    if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô', 'ã', 'õ', 'ão', 'ãe', 'õe')):
-        return "OXITONA"
-    
-    # Tem acento gráfico, mas NÃO no fim?
-    tem_acento = any(c in "áéíóúâêôãõ" for c in p)
-    if tem_acento:
-        return "PAROXITONA" 
-
-    # SEM ACENTO GRÁFICO:
-    # Termina em R, L, Z, X, I, U, IM, UM, OM -> OXÍTONA (Mulher, Barril)
-    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un')):
-        return "OXITONA"
-        
-    # O Resto -> PAROXÍTONA (Casa, Zíper - nota: Zíper tem acento, mas cai na regra acima se não tiver acento no banco)
-    return "PAROXITONA"
-
 def extrair_sufixo_visual(palavra):
     p = palavra.lower().strip()
     if p.endswith('ã'): return 'ã'
@@ -98,7 +90,6 @@ def extrair_sufixo_visual(palavra):
     if p.endswith(('ãos', 'ães', 'ões')): return p[-3:]
     if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô')): return p[-1:] 
     
-    # Regra do R/L/Z (Mulher, Anel) -> Pega vogal+consoante (er, el)
     if re.search(r'[aeiouáéíóúâêôãõ][rlzxnm]$', p):
         return p[-2:]
         
@@ -107,25 +98,6 @@ def extrair_sufixo_visual(palavra):
         if p[i] in vogais: return p[i:]
     if len(p) >= 3: return p[-3:]
     return p 
-
-def extrair_vogal_tonica_ipa(ipa):
-    if not ipa: return None
-    ipa_limpo = ipa.replace('/', '').replace('[', '').replace(']', '').strip()
-    if 'ˈ' in ipa_limpo:
-        trecho_tonico = ipa_limpo.split('ˈ')[-1]
-        match = re.search(r'[aeiouɛɔɐə]', trecho_tonico)
-        if match: return match.group(0)
-    return None
-
-def timbres_compativeis(vogal1, vogal2):
-    if not vogal1 or not vogal2: return True
-    grupo_E_aberto = ['ɛ']; grupo_E_fechado = ['e']
-    grupo_O_aberto = ['ɔ']; grupo_O_fechado = ['o']
-    if vogal1 in grupo_E_aberto and vogal2 in grupo_E_fechado: return False
-    if vogal1 in grupo_E_fechado and vogal2 in grupo_E_aberto: return False
-    if vogal1 in grupo_O_aberto and vogal2 in grupo_O_fechado: return False
-    if vogal1 in grupo_O_fechado and vogal2 in grupo_O_aberto: return False
-    return True
 
 # --- ROTAS ---
 
@@ -139,13 +111,11 @@ def obter_definicao(palavra: str):
         cursor = conn.cursor()
         cursor.execute("SELECT id, grafia, classe, definicao FROM palavras WHERE lower(grafia) = ?", (palavra.lower(),))
         res = cursor.fetchone()
-        
         if not res:
             conn.close()
             def_e = buscar_definicao_online(palavra)
             if def_e: return {"palavra": palavra, "classe": "?", "definicao": def_e}
             raise HTTPException(status_code=404, detail="Palavra não encontrada")
-
         id_p, grafia, classe, def_a = res
         if not def_a or len(def_a) < 5 or "Definição não" in def_a:
             def_on = buscar_definicao_online(grafia)
@@ -173,8 +143,9 @@ def buscar_rimas(palavra: str):
             raise HTTPException(status_code=404, detail="Palavra não encontrada")
 
         ipa_alvo, chave_perf, classe_alvo, silabas, origem_alvo = res
-        vogal_tonica_alvo = extrair_vogal_tonica_ipa(ipa_alvo)
-        tonicidade_alvo = identificar_tonicidade(palavra_alvo_low, ipa_alvo)
+        
+        # CALCULA A TONICIDADE DO ALVO (Para filtrar Décima/Lágrima)
+        tonicidade_alvo = identificar_tonicidade(palavra_alvo_low)
 
         candidatos = []
         if chave_perf:
@@ -191,6 +162,9 @@ def buscar_rimas(palavra: str):
         resultado_final = []
         vistos = set()
 
+        # VOGAIS PARA CHECAGEM DE DITONGO
+        vogais_check = "aeiouáéíóúâêôãõ"
+
         for grafia, classe, n_silabas, origem, ipa_cand in candidatos:
             g_low = grafia.lower()
             
@@ -200,17 +174,41 @@ def buscar_rimas(palavra: str):
             if ' ' in grafia or grafia.startswith('-'): continue
             if 'Nome Próprio' in classe and not origem: continue
             
-            # Trava U vs OU
             if palavra_alvo_low.endswith(('u', 'ú')) and g_low.endswith('ou'): continue 
             if palavra_alvo_low.endswith('ou') and g_low.endswith(('u', 'ú')): continue
 
-            # Filtro de Tonicidade (Mulher vs Zíper)
-            tonicidade_cand = identificar_tonicidade(g_low, ipa_cand)
-            if tonicidade_alvo != tonicidade_cand: continue
+            # --- FILTRO 1: TONICIDADE (Tchau Décima/Lágrima) ---
+            # Se eu busco Paroxítona, só aceito Paroxítona. Se busco Proparoxítona, só aceito Proparoxítona.
+            tonicidade_cand = identificar_tonicidade(g_low)
+            if tonicidade_alvo != tonicidade_cand:
+                continue
 
-            # Filtro de Timbre (Amor vs Maior)
-            vogal_tonica_cand = extrair_vogal_tonica_ipa(ipa_cand)
-            if not timbres_compativeis(vogal_tonica_alvo, vogal_tonica_cand): continue
+            # --- FILTRO 2: ANTI-DITONGO (Tchau Teima/Queima) ---
+            # Se a rima visual começa com vogal (ex: "ima"), 
+            # verificamos se a letra ANTERIOR a ela também é vogal.
+            # Ex: Alvo=Rima (antes do i é R-consoante). Cand=Teima (antes do i é E-vogal).
+            # Se forem diferentes, é ditongo vs hiato -> Bloqueia.
+            
+            if sufixo and sufixo[0] in vogais_check:
+                # Acha onde o sufixo começa na palavra candidata
+                idx_sufixo = g_low.rfind(sufixo)
+                if idx_sufixo > 0:
+                    letra_anterior_cand = g_low[idx_sufixo - 1]
+                    
+                    # Verifica a palavra alvo também
+                    idx_sufixo_alvo = palavra_alvo_low.rfind(sufixo)
+                    letra_anterior_alvo = "consoante"
+                    if idx_sufixo_alvo > 0:
+                        if palavra_alvo_low[idx_sufixo_alvo - 1] in vogais_check:
+                            letra_anterior_alvo = "vogal"
+                    
+                    eh_vogal_cand = letra_anterior_cand in vogais_check
+                    
+                    # Se um tem vogal antes (ditongo) e o outro não, TCHAU!
+                    if (letra_anterior_alvo == "vogal" and not eh_vogal_cand) or \
+                       (letra_anterior_alvo != "vogal" and eh_vogal_cand):
+                       continue
+            # ---------------------------------------------------------
 
             vistos.add(g_low)
             score = calcular_pontuacao(palavra, grafia, classe, origem)
