@@ -7,67 +7,42 @@ import unicodedata
 
 app = FastAPI(title="Dicionário de Rimas API")
 
+# Configuração de CORS
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 ARQUIVO_BANCO = 'dicionario_mestre.db'
 
+# Lista Negra Manual (Atualizada com Anglicismos e Erros)
 BLACKLIST = {
+    # Lixo anterior
     "calais", "hollywood", "mcdonalds", "facebook", "youtube", 
-    "google", "twitter", "instagram", "kaiser", "design", "muié"
+    "google", "twitter", "instagram", "kaiser", "design", "muié",
+    
+    # Anglicismos terminados em ER
+    "after", "boxer", "camper", "cheater", "chester", "cluster", 
+    "cover", "driver", "folder", "führer", "mister", "pointer", 
+    "primer", "router", "server", "teaser", "timer", "voucher", 
+    "vtuber", "designer", "hamster", "hipster", "partner", 
+    "sniper", "spoiler", "outlier", "best-seller", "bestseller",
+    "blazer", "broder", "brother", "container", "laser", "poker",
+    "poster", "pier", "scanner", "trailer", "uber", "webdesigner",
+    
+    # Erros ou formas arcaicas estranhas
+    "fisser", "desder", "reder", "choveser", "apascentaser", 
+    "desnazificacer", "arquichanceler", "aluguer", "clister",
+    "bebericará", "reouver", "fizer", "disser", "trouxer", "puder" # Verbos conjugados soltos que às vezes poluem
 }
 
 # --- FUNÇÕES AUXILIARES ---
 
 def remover_acentos(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
-
-def identificar_tonicidade(palavra, ipa=None):
-    """
-    Descobre se a palavra é OXITONA, PAROXITONA ou PROPAROXITONA.
-    """
-    p = palavra.lower().strip()
-    
-    # 1. SE TIVER IPA, É O MAIS SEGURO
-    if ipa and 'ˈ' in ipa:
-        # Limpa o IPA
-        ipa_limpo = ipa.replace('/', '').replace('[', '').replace(']', '').strip()
-        # Divide pelas sílabas (aproximado por pontos ou vogais)
-        # A lógica simples: Onde está o 'ˈ'?
-        # Se estiver logo antes da última vogal -> Oxítona
-        # Se estiver antes da penúltima -> Paroxítona
-        # Mas o IPA às vezes é complexo. Vamos confiar nas REGRAS VISUAIS DO PORTUGUÊS que são rígidas.
-        pass 
-
-    # 2. REGRAS VISUAIS (GRAMÁTICA PORTUGUESA)
-    
-    # Tem acento gráfico?
-    tem_acento = any(c in "áéíóúâêôãõ" for c in p)
-    
-    # Se tem acento na ÚLTIMA sílaba -> OXÍTONA (Sofá, Café, Baú, Irmã)
-    if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô', 'ã', 'õ', 'ão', 'ãe', 'õe')):
-        return "OXITONA"
-    
-    # Se tem acento, mas NÃO é no fim...
-    if tem_acento:
-        # ...e termina em R, L, Z, X, N, PS (Zíper, Revólver, Têxtil) -> PAROXÍTONA
-        # (Porque se fosse oxítona terminada em R, não teria acento, ex: Mulher)
-        return "PAROXITONA" 
-        # Nota: Proparoxítonas também caem aqui (Lâmpada), mas para rimas, 
-        # separamos Oxítonas do resto. Parox e Proparox raramente se confundem na busca visual.
-
-    # SEM ACENTO GRÁFICO:
-    
-    # Termina em R, L, Z, X, I, U, IM, UM, OM -> OXÍTONA (Natural)
-    # Ex: Mulher, Barril, Nariz, Tupi, Urubu, Ruim, Atum
-    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un')):
-        return "OXITONA"
-        
-    # O Resto (termina em a, e, o, am, em, ns) -> PAROXÍTONA (Natural)
-    # Ex: Casa, Dente, Gato, Cantam, Homem
-    return "PAROXITONA"
 
 def calcular_pontuacao(palavra_alvo, palavra_candidata, classe_candidata, origem_candidata):
     score = 0
@@ -91,6 +66,29 @@ def buscar_definicao_online(palavra):
                 return re.sub(r'<[^>]+>', '', item.group(1)).strip().replace('\n', ' ')
     except: pass
     return None
+
+def identificar_tonicidade(palavra, ipa=None):
+    """
+    Descobre se a palavra é OXITONA ou PAROXITONA.
+    """
+    p = palavra.lower().strip()
+    
+    # Se tem acento gráfico final -> OXÍTONA
+    if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô', 'ã', 'õ', 'ão', 'ãe', 'õe')):
+        return "OXITONA"
+    
+    # Tem acento gráfico, mas NÃO no fim?
+    tem_acento = any(c in "áéíóúâêôãõ" for c in p)
+    if tem_acento:
+        return "PAROXITONA" 
+
+    # SEM ACENTO GRÁFICO:
+    # Termina em R, L, Z, X, I, U, IM, UM, OM -> OXÍTONA (Mulher, Barril)
+    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un')):
+        return "OXITONA"
+        
+    # O Resto -> PAROXÍTONA (Casa, Zíper - nota: Zíper tem acento, mas cai na regra acima se não tiver acento no banco)
+    return "PAROXITONA"
 
 def extrair_sufixo_visual(palavra):
     p = palavra.lower().strip()
@@ -141,11 +139,13 @@ def obter_definicao(palavra: str):
         cursor = conn.cursor()
         cursor.execute("SELECT id, grafia, classe, definicao FROM palavras WHERE lower(grafia) = ?", (palavra.lower(),))
         res = cursor.fetchone()
+        
         if not res:
             conn.close()
             def_e = buscar_definicao_online(palavra)
             if def_e: return {"palavra": palavra, "classe": "?", "definicao": def_e}
             raise HTTPException(status_code=404, detail="Palavra não encontrada")
+
         id_p, grafia, classe, def_a = res
         if not def_a or len(def_a) < 5 or "Definição não" in def_a:
             def_on = buscar_definicao_online(grafia)
@@ -174,9 +174,6 @@ def buscar_rimas(palavra: str):
 
         ipa_alvo, chave_perf, classe_alvo, silabas, origem_alvo = res
         vogal_tonica_alvo = extrair_vogal_tonica_ipa(ipa_alvo)
-        
-        # IDENTIFICA A TONICIDADE DO ALVO (Oxitona vs Paroxitona)
-        # Ex: Mulher -> OXITONA | Zíper -> PAROXITONA
         tonicidade_alvo = identificar_tonicidade(palavra_alvo_low, ipa_alvo)
 
         candidatos = []
@@ -202,19 +199,16 @@ def buscar_rimas(palavra: str):
             if g_low in BLACKLIST: continue
             if ' ' in grafia or grafia.startswith('-'): continue
             if 'Nome Próprio' in classe and not origem: continue
+            
+            # Trava U vs OU
             if palavra_alvo_low.endswith(('u', 'ú')) and g_low.endswith('ou'): continue 
             if palavra_alvo_low.endswith('ou') and g_low.endswith(('u', 'ú')): continue
 
-            # --- FILTRO DE TONICIDADE (A CORREÇÃO PARA MULHER vs ZÍPER) ---
+            # Filtro de Tonicidade (Mulher vs Zíper)
             tonicidade_cand = identificar_tonicidade(g_low, ipa_cand)
-            
-            # Se a tonicidade for diferente, ignora!
-            # Ex: Mulher (Oxitona) vs Zíper (Paroxitona) -> Diferentes -> Tchau
-            if tonicidade_alvo != tonicidade_cand:
-                continue
-            # -------------------------------------------------------------
+            if tonicidade_alvo != tonicidade_cand: continue
 
-            # Filtro de Timbre (Aberto/Fechado)
+            # Filtro de Timbre (Amor vs Maior)
             vogal_tonica_cand = extrair_vogal_tonica_ipa(ipa_cand)
             if not timbres_compativeis(vogal_tonica_alvo, vogal_tonica_cand): continue
 
