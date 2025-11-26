@@ -150,7 +150,7 @@ def buscar_rimas(palavra: str):
 
         return {
             "termo": palavra, "ipa": ipa, "classe_gramatical": classe_alvo, "origem": origem_alvo,
-            "rimas": resultado_final # Lista única agora!
+            "rimas": resultado_final # Lista única!
         }
     except Exception as e:
         print(f"ERRO: {e}")
