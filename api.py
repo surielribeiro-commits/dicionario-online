@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import requests
 import re
+import unicodedata
 
 app = FastAPI(title="Dicionário de Rimas API")
 
@@ -43,76 +44,64 @@ def buscar_definicao_online(palavra):
     except: pass
     return None
 
-def identificar_tonicidade(palavra):
-    """
-    Define se é OXITONA, PAROXITONA ou PROPAROXITONA.
-    Essencial para não misturar 'Cabula' com 'Fécula'.
-    """
-    p = palavra.lower().strip()
-    
-    # Vogais que contam como sílabas
-    vogais_silabicas = "aeiouãõáéíóúâêô"
-    
-    # 1. Procura acento gráfico (A Regra de Ouro das Proparoxítonas)
-    acento_idx = -1
-    for i, char in enumerate(p):
-        if char in "áéíóúâêô":
-            acento_idx = i
-            break
-    
-    if acento_idx != -1:
-        # Se tem acento, contamos quantas vogais existem DEPOIS dele.
-        # Ex: Fécula (acento no é). Depois tem 'u', 'a'. Total 2. -> PROPAROXITONA.
-        # Ex: Túnel (acento no ú). Depois tem 'e'. Total 1. -> PAROXITONA.
-        # Ex: Baú (acento no ú). Depois tem 0. -> OXITONA.
-        
-        resto = p[acento_idx+1:]
-        # Conta vogais no resto (ignorando consoantes)
-        num_vogais_pos = 0
-        for char in resto:
-            if char in vogais_silabicas:
-                num_vogais_pos += 1
-        
-        if num_vogais_pos == 0: return "OXITONA"
-        if num_vogais_pos == 1: return "PAROXITONA"
-        if num_vogais_pos >= 2: return "PROPAROXITONA" # Bingo!
-
-    # 2. Se não tem acento gráfico, usamos as regras de terminação
-    
-    # Oxítonas naturais (terminam em R, L, Z, X, I, U, IM, UM, OM)
-    # Ex: Mulher, Amor, Tupi, Urubu, Bom
-    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un')):
-        return "OXITONA"
-    
-    # Til no final (Irmã, Manhã) -> Oxítona
-    if p.endswith(('ã', 'ãs')):
-        return "OXITONA"
-        
-    # Todo o resto é PAROXÍTONA (Casa, Cabula, Bula, Jovem)
-    return "PAROXITONA"
-
 def extrair_sufixo_visual(palavra):
+    """
+    Gera a chave de rima visual.
+    NOVA REGRA: Se tiver acento, a rima é do acento até o fim.
+    Isso resolve Fécula (écula) vs Fábula (ábula).
+    """
     p = palavra.lower().strip()
+    
+    # 1. REGRA DE OURO DA ACENTUAÇÃO (Prioridade Máxima)
+    # Procura qualquer vogal acentuada. Se achar, a rima começa ALI.
+    # Ex: Fécula -> 'écula'
+    # Ex: Célula -> 'élula'
+    # Ex: Baú -> 'ú'
+    # Ex: Também -> 'ém'
+    
+    # Percorre a palavra de trás para frente procurando o acento tônico
+    acentos = "áéíóúâêô"
+    for i in range(len(p) - 1, -1, -1):
+        if p[i] in acentos:
+            # Achou a tônica marcada! Retorna do acento até o fim.
+            return p[i:]
+
+    # 2. Regras Especiais (Til e Ditongos Nasais - se não tiver acento agudo/circunflexo)
     if p.endswith('ã'): return 'ã'
     if p.endswith('ãs'): return 'ãs'
     if p.endswith(('ão', 'ãe', 'õe')): return p[-2:]
     if p.endswith(('ãos', 'ães', 'ões')): return p[-3:]
-    if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô')): return p[-1:] 
     
-    if re.search(r'[aeiouáéíóúâêôãõ][rlzxnm]$', p):
+    # 3. Consoantes finais de rima (Amor, Azul, Paz, Ogum, Nanquim)
+    if re.search(r'[aeiou][rlzxnm]$', p):
         return p[-2:]
-    
-    # Para 'Cabula', pega a vogal anterior: 'abula' ou 'bula'
-    # Mas o 'limit' do SQL cuida de pegar parecidos.
-    vogais = "aeiouáéíóúâêô"
+        
+    # 4. REGRA DO CAÇA-VOGAL (Para palavras sem acento gráfico - Paroxítonas)
+    # Ex: Casa, Rima, Teima
+    vogais = "aeiou"
     for i in range(len(p) - 2, -1, -1):
         if p[i] in vogais:
-            # Se for ditongo (Queima), pega a anterior tb
+            # Se tiver outra vogal antes, pega ela tb (Queima -> eima)
             if i > 0 and p[i-1] in vogais: return p[i-1:]
             return p[i:]
             
     if len(p) >= 3: return p[-3:]
     return p 
+
+def identificar_tonicidade(palavra):
+    p = palavra.lower().strip()
+    acento_idx = -1
+    for i, char in enumerate(p):
+        if char in "áéíóúâêô": 
+            acento_idx = i; break
+    if acento_idx != -1:
+        resto = p[acento_idx+1:]
+        num_vogais_pos = len(re.findall(r'[aeiouãõ]', resto))
+        if num_vogais_pos == 0: return "OXITONA"
+        if num_vogais_pos == 1: return "PAROXITONA"
+        if num_vogais_pos >= 2: return "PROPAROXITONA"
+    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un', 'ã', 'ãs')): return "OXITONA"
+    return "PAROXITONA"
 
 # --- ROTAS ---
 
@@ -159,18 +148,20 @@ def buscar_rimas(palavra: str):
 
         ipa_alvo, chave_perf, classe_alvo, silabas, origem_alvo = res
         
-        # 1. IDENTIFICA TONICIDADE DO ALVO (Ex: Cabula -> Paroxítona)
         tonicidade_alvo = identificar_tonicidade(palavra_alvo_low)
+        
+        # AQUI MUDOU: Agora usamos a nova função para gerar o sufixo estrito
+        sufixo_alvo = extrair_sufixo_visual(palavra_alvo_low)
 
         candidatos = []
+        # 1. Fonética
         if chave_perf:
-            cursor.execute("SELECT grafia, classe, num_silabas, origem, ipa FROM palavras WHERE chave_rima = ? AND lower(grafia) != ?", (chave_perf, palavra_alvo_low))
+            cursor.execute("SELECT grafia, classe, num_silabas, origem FROM palavras WHERE chave_rima = ? AND lower(grafia) != ?", (chave_perf, palavra_alvo_low))
             candidatos.extend(cursor.fetchall())
         
-        sufixo = extrair_sufixo_visual(palavra_alvo_low)
-        if sufixo:
-            # Busca ampla visual
-            cursor.execute("SELECT grafia, classe, num_silabas, origem, ipa FROM palavras WHERE grafia LIKE ? AND lower(grafia) != ? LIMIT 3000", ('%' + sufixo, palavra_alvo_low))
+        # 2. Visual (Agora muito mais preciso para proparoxítonas)
+        if sufixo_alvo:
+            cursor.execute("SELECT grafia, classe, num_silabas, origem FROM palavras WHERE grafia LIKE ? AND lower(grafia) != ? LIMIT 3000", ('%' + sufixo_alvo, palavra_alvo_low))
             candidatos.extend(cursor.fetchall())
 
         conn.close()
@@ -178,7 +169,7 @@ def buscar_rimas(palavra: str):
         resultado_final = []
         vistos = set()
 
-        for grafia, classe, n_silabas, origem, ipa_cand in candidatos:
+        for grafia, classe, n_silabas, origem in candidatos:
             g_low = grafia.lower()
             
             if len(grafia) < 2: continue
@@ -186,29 +177,26 @@ def buscar_rimas(palavra: str):
             if g_low in BLACKLIST: continue
             if ' ' in grafia or grafia.startswith('-'): continue
             if 'Nome Próprio' in classe and not origem: continue
-            
             if palavra_alvo_low.endswith(('u', 'ú')) and g_low.endswith('ou'): continue 
             if palavra_alvo_low.endswith('ou') and g_low.endswith(('u', 'ú')): continue
 
-            # --- FILTRO DE TONICIDADE RIGOROSO ---
-            # Calcula a tonicidade do candidato (Ex: Fécula -> Proparoxítona)
-            tonicidade_cand = identificar_tonicidade(g_low)
+            # --- FILTROS ---
             
-            # Se forem diferentes, descarta!
-            # (Cabula [Parox] != Fécula [Proparox]) -> Tchau!
-            if tonicidade_alvo != tonicidade_cand:
-                continue
-            # -------------------------------------
+            # 1. Tonicidade (Impede que Fécula rime com uma Paroxítona, se houver erro)
+            tonicidade_cand = identificar_tonicidade(g_low)
+            if tonicidade_alvo != tonicidade_cand: continue
 
-            # Filtro de Ditongo (Regra do Espelho)
-            # Se eu termino em vogal+sufixo (ex: Teima) e o outro não (Rima), ou vice-versa.
-            if sufixo and sufixo[0] in "aeiouáéíóúâêôãõ":
-                idx_alvo = palavra_alvo_low.rfind(sufixo)
-                idx_cand = g_low.rfind(sufixo)
-                if idx_alvo > 0 and idx_cand > 0:
-                    ant_alvo = palavra_alvo_low[idx_alvo-1] in "aeiouáéíóúâêôãõ"
-                    ant_cand = g_low[idx_cand-1] in "aeiouáéíóúâêôãõ"
-                    if ant_alvo != ant_cand: continue
+            # 2. Regra do Espelho Visual (Essencial para Fécula vs Célula)
+            # O sufixo de Fécula é 'écula'. O de Célula é 'élula'.
+            # 'écula' != 'élula', então serão eliminados.
+            sufixo_cand = extrair_sufixo_visual(g_low)
+            
+            # Nota: A busca fonética (IPA) tem prioridade e pula essa checagem se for perfeita.
+            # Mas se a busca fonética trouxe "Célula" (por erro de chave no banco), a gente filtra aqui.
+            if sufixo_alvo != sufixo_cand:
+                # Se os sufixos visuais não batem, só aceitamos se o IPA for idêntico no banco
+                # Mas como estamos limpando, vamos ser rigorosos:
+                continue
 
             vistos.add(g_low)
             score = calcular_pontuacao(palavra, grafia, classe, origem)
