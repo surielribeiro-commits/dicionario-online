@@ -18,20 +18,79 @@ app.add_middleware(
 
 ARQUIVO_BANCO = 'dicionario_mestre.db'
 
-# Lista Negra Manual
 BLACKLIST = {
     "calais", "hollywood", "mcdonalds", "facebook", "youtube", 
-    "google", "twitter", "instagram", "kaiser", "design", "muié",
-    # Adicione aqui palavras que quer esconder
+    "google", "twitter", "instagram", "kaiser", "design", "muié"
 }
 
-# --- FUNÇÕES AUXILIARES ---
+# --- FUNÇÕES DE INTELIGÊNCIA FONÉTICA ---
+
+def remover_acentos(texto):
+    return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+
+def verificar_compatibilidade_ditongo(alvo, candidato, sufixo):
+    """
+    Impede que vogais puras rimem com ditongos.
+    Ex: Rima (I puro) vs Queima (EI ditongo).
+    """
+    if not sufixo: return True
+    
+    # Se o sufixo começa com consoante, não há risco de ditongo na junção
+    if sufixo[0] not in "aeiouáéíóúâêôãõ": return True
+    
+    # Acha onde o sufixo começa em cada palavra
+    idx_alvo = alvo.rfind(sufixo)
+    idx_cand = candidato.rfind(sufixo)
+    
+    if idx_alvo <= 0 or idx_cand <= 0: return True
+    
+    # Pega a letra IMEDIATAMENTE ANTERIOR ao sufixo
+    anterior_alvo = alvo[idx_alvo - 1]
+    anterior_cand = candidato[idx_cand - 1]
+    
+    vogais = "aeiouáéíóúâêôãõ"
+    
+    eh_vogal_alvo = anterior_alvo in vogais
+    eh_vogal_cand = anterior_cand in vogais
+    
+    # Se um tem vogal antes (formando ditongo) e o outro tem consoante (vogal pura) -> BLOQUEIA
+    if eh_vogal_alvo != eh_vogal_cand:
+        return False
+        
+    return True
+
+def identificar_tonicidade(palavra):
+    """
+    Classifica em OXITONA, PAROXITONA ou PROPAROXITONA.
+    Corrige: Rima (Parox) vs Décima (Proparox).
+    """
+    p = palavra.lower().strip()
+    
+    # 1. Verifica acentos gráficos (Definitivo para Proparoxítonas)
+    acento_encontrado = -1
+    for i, char in enumerate(p):
+        if char in "áéíóúâêô": 
+            acento_encontrado = i
+            break
+            
+    if acento_encontrado != -1:
+        # Conta vogais DEPOIS do acento
+        resto = p[acento_encontrado+1:]
+        num_vogais_pos = len(re.findall(r'[aeiouãõ]', resto))
+        
+        if num_vogais_pos == 0: return "OXITONA"
+        if num_vogais_pos == 1: return "PAROXITONA"
+        if num_vogais_pos >= 2: return "PROPAROXITONA"
+
+    # 2. Sem acento gráfico (Regras Padrão)
+    if p.endswith(('r', 'l', 'z', 'x', 'i', 'u', 'im', 'um', 'om', 'un')):
+        return "OXITONA"
+    
+    return "PAROXITONA"
 
 def calcular_pontuacao(palavra_alvo, palavra_candidata, classe_candidata, origem_candidata):
     score = 0
-    # Bônus Cultural
     if origem_candidata: score += 100
-    # Penalidade de Tamanho
     if len(palavra_candidata) <= 2: score -= 10
     return score
 
@@ -48,48 +107,25 @@ def buscar_definicao_online(palavra):
         if match:
             item = re.search(r'<li>(.*?)</li>', match.group(1), re.DOTALL)
             if item:
-                txt = re.sub(r'<[^>]+>', '', item.group(1)).strip()
-                return txt.replace('\n', ' ')
+                return re.sub(r'<[^>]+>', '', item.group(1)).strip().replace('\n', ' ')
     except: pass
     return None
 
 def extrair_sufixo_visual(palavra):
-    """
-    Cria chave de rima visual inteligente (Sensível a Ditongos).
-    """
     p = palavra.lower().strip()
-    
-    # 1. Regras Especiais (Til e Ditongos Nasais)
     if p.endswith('ã'): return 'ã'
     if p.endswith('ãs'): return 'ãs'
     if p.endswith(('ão', 'ãe', 'õe')): return p[-2:]
     if p.endswith(('ãos', 'ães', 'ões')): return p[-3:]
-    
-    # 2. Oxítonas com acento (Café, Baú)
-    if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô')): 
-        return p[-1:] 
-
-    # 3. Consoantes finais de rima (Amor, Azul, Paz, Ogum, Nanquim)
-    if re.search(r'[aeiouáéíóúâêôãõ][rlzxnm]$', p):
-        return p[-2:]
-        
-    # 4. REGRA DO CAÇA-VOGAL + DITONGO (A Correção)
+    if p.endswith(('á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô')): return p[-1:] 
+    if re.search(r'[aeiouáéíóúâêôãõ][rlzxnm]$', p): return p[-2:]
     vogais = "aeiouáéíóúâêô"
-    
-    # Caminha de trás para frente procurando a vogal tônica
+    # Caça a vogal tônica (incluindo ditongos decrescentes)
     for i in range(len(p) - 2, -1, -1):
         if p[i] in vogais:
-            # ACHOU A VOGAL! (Ex: o 'i' de Queima)
-            
-            # Verifica se antes dela tem OUTRA vogal (formando ditongo)
-            # Ex: Queima -> Antes do 'i' tem 'e'. Pega 'eima'.
-            if i > 0 and p[i-1] in vogais:
-                return p[i-1:] 
-            
-            # Se não tiver vogal antes (Ex: Rima -> Antes do 'i' tem 'r'), pega só dali.
+            # Se tiver outra vogal antes, pega ela tb (Queima -> eima)
+            if i > 0 and p[i-1] in vogais: return p[i-1:]
             return p[i:]
-            
-    # Fallback
     if len(p) >= 3: return p[-3:]
     return p 
 
@@ -111,7 +147,7 @@ def obter_definicao(palavra: str):
             if def_e: return {"palavra": palavra, "classe": "?", "definicao": def_e}
             raise HTTPException(status_code=404, detail="Palavra não encontrada")
         id_p, grafia, classe, def_a = res
-        if not def_a or len(def_a) < 5 or "Definição não" in def_a or "indisponível" in def_a:
+        if not def_a or len(def_a) < 5 or "Definição não" in def_a:
             def_on = buscar_definicao_online(grafia)
             if def_on:
                 conn = sqlite3.connect(ARQUIVO_BANCO)
@@ -137,24 +173,24 @@ def buscar_rimas(palavra: str):
             raise HTTPException(status_code=404, detail="Palavra não encontrada")
 
         ipa_alvo, chave_perf, classe_alvo, silabas, origem_alvo = res
-
-        # --- BUSCA HÍBRIDA ---
-        candidatos = []
         
-        # 1. Fonética
+        # Análise Gramatical do Alvo
+        tonicidade_alvo = identificar_tonicidade(palavra_alvo_low)
+        sufixo_alvo = extrair_sufixo_visual(palavra_alvo_low)
+
+        candidatos = []
+        # 1. Fonética (Prioridade)
         if chave_perf:
             cursor.execute("SELECT grafia, classe, num_silabas, origem FROM palavras WHERE chave_rima = ? AND lower(grafia) != ?", (chave_perf, palavra_alvo_low))
             candidatos.extend(cursor.fetchall())
         
-        # 2. Visual Inteligente (Agora separa EIMA de OIMA)
-        sufixo = extrair_sufixo_visual(palavra_alvo_low)
-        if sufixo:
-            cursor.execute("SELECT grafia, classe, num_silabas, origem FROM palavras WHERE grafia LIKE ? AND lower(grafia) != ? LIMIT 3000", ('%' + sufixo, palavra_alvo_low))
+        # 2. Visual (Fallback + Complemento)
+        if sufixo_alvo:
+            cursor.execute("SELECT grafia, classe, num_silabas, origem FROM palavras WHERE grafia LIKE ? AND lower(grafia) != ? LIMIT 3000", ('%' + sufixo_alvo, palavra_alvo_low))
             candidatos.extend(cursor.fetchall())
 
         conn.close()
 
-        # --- PROCESSAMENTO ---
         resultado_final = []
         vistos = set()
 
@@ -165,29 +201,25 @@ def buscar_rimas(palavra: str):
             if g_low in vistos: continue
             if g_low in BLACKLIST: continue
             if ' ' in grafia or grafia.startswith('-'): continue
-            if 'Nome Próprio' in classe and not origem: continue 
-            
-            # Trava U vs OU
+            if 'Nome Próprio' in classe and not origem: continue
             if palavra_alvo_low.endswith(('u', 'ú')) and g_low.endswith('ou'): continue 
             if palavra_alvo_low.endswith('ou') and g_low.endswith(('u', 'ú')): continue
 
-            # TRAVA EXTRA DE DITONGO (Garantia Final)
-            # Se a palavra alvo termina em 'eima' e o candidato só em 'ima' (sem o e), corta.
-            if sufixo and not g_low.endswith(sufixo):
-                # Só corta se não veio da busca fonética (IPA é autoridade máxima)
-                eh_fonetico = False
-                if chave_perf:
-                    # Verifica se esse candidato específico veio da lista fonética
-                    # (Lógica simplificada: confiamos no sufixo visual para limpar a sujeira da busca visual)
-                    pass
-                
-                # Se a rima visual não bater exatamente com o sufixo calculado (que agora inclui ditongo), ignora.
-                # Ex: Alvo=Queima (Sufixo=eima). Cand=Coima (Termina em oima). 'oima' não termina em 'eima'. Tchau.
+            # --- FILTRO 1: TONICIDADE (Rima vs Décima) ---
+            tonicidade_cand = identificar_tonicidade(g_low)
+            if tonicidade_alvo != tonicidade_cand: continue
+
+            # --- FILTRO 2: DITONGO (Rima vs Queima) ---
+            # Verifica se a estrutura anterior à rima é compatível (Vogal vs Consoante)
+            if not verificar_compatibilidade_ditongo(palavra_alvo_low, g_low, sufixo_alvo):
                 continue
 
             vistos.add(g_low)
             score = calcular_pontuacao(palavra, grafia, classe, origem)
-            resultado_final.append({"palavra": grafia, "silabas": n_silabas, "origem": origem, "score": score, "classe": classe})
+            
+            resultado_final.append({
+                "palavra": grafia, "silabas": n_silabas, "origem": origem, "score": score, "classe": classe
+            })
 
         resultado_final.sort(key=lambda x: (x['silabas'], -x['score'], x['palavra']))
 
